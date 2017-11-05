@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2016 the original author or authors.
+ * Copyright 2002-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 
 package org.springframework.web.servlet.mvc.method.annotation;
 
+import java.beans.ConstructorProperties;
 import java.beans.PropertyEditorSupport;
 import java.io.IOException;
 import java.io.Serializable;
@@ -41,10 +42,10 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import javax.servlet.ServletConfig;
 import javax.servlet.ServletContext;
-import javax.servlet.ServletException;
 import javax.servlet.http.Cookie;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
@@ -65,10 +66,10 @@ import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.beans.factory.config.PropertyPlaceholderConfigurer;
 import org.springframework.beans.factory.support.RootBeanDefinition;
 import org.springframework.beans.propertyeditors.CustomDateEditor;
-import org.springframework.context.ApplicationContextInitializer;
 import org.springframework.context.annotation.AnnotationConfigUtils;
 import org.springframework.core.MethodParameter;
 import org.springframework.core.convert.converter.Converter;
+import org.springframework.format.support.DefaultFormattingConversionService;
 import org.springframework.format.support.FormattingConversionServiceFactoryBean;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -83,6 +84,7 @@ import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.http.converter.HttpMessageNotWritableException;
 import org.springframework.http.converter.StringHttpMessageConverter;
 import org.springframework.http.converter.xml.MarshallingHttpMessageConverter;
+import org.springframework.lang.Nullable;
 import org.springframework.mock.web.test.MockHttpServletRequest;
 import org.springframework.mock.web.test.MockHttpServletResponse;
 import org.springframework.mock.web.test.MockMultipartFile;
@@ -98,6 +100,7 @@ import org.springframework.tests.sample.beans.TestBean;
 import org.springframework.ui.ExtendedModelMap;
 import org.springframework.ui.Model;
 import org.springframework.ui.ModelMap;
+import org.springframework.util.Assert;
 import org.springframework.util.MultiValueMap;
 import org.springframework.util.SerializationTestUtils;
 import org.springframework.util.StringUtils;
@@ -109,9 +112,11 @@ import org.springframework.web.accept.ContentNegotiationManagerFactoryBean;
 import org.springframework.web.bind.WebDataBinder;
 import org.springframework.web.bind.annotation.CookieValue;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.InitBinder;
 import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -127,7 +132,6 @@ import org.springframework.web.bind.support.WebBindingInitializer;
 import org.springframework.web.context.WebApplicationContext;
 import org.springframework.web.context.request.NativeWebRequest;
 import org.springframework.web.context.request.WebRequest;
-import org.springframework.web.context.support.GenericWebApplicationContext;
 import org.springframework.web.method.support.HandlerMethodArgumentResolver;
 import org.springframework.web.multipart.support.StringMultipartFileEditor;
 import org.springframework.web.servlet.ModelAndView;
@@ -138,17 +142,11 @@ import org.springframework.web.servlet.mvc.support.RedirectAttributes;
 import org.springframework.web.servlet.support.RequestContextUtils;
 import org.springframework.web.servlet.view.InternalResourceViewResolver;
 
-import static org.junit.Assert.assertArrayEquals;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.Assert.*;
 
 /**
  * @author Rossen Stoyanchev
+ * @author Juergen Hoeller
  */
 public class ServletAnnotationControllerHandlerMethodTests extends AbstractServletHandlerMethodTests {
 
@@ -243,13 +241,10 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 
 	@Test
 	public void defaultExpressionParameters() throws Exception {
-		initServlet(new ApplicationContextInitializer<GenericWebApplicationContext>() {
-			@Override
-			public void initialize(GenericWebApplicationContext context) {
-				RootBeanDefinition ppc = new RootBeanDefinition(PropertyPlaceholderConfigurer.class);
-				ppc.getPropertyValues().add("properties", "myKey=foo");
-				context.registerBeanDefinition("ppc", ppc);
-			}
+		initServlet(wac -> {
+			RootBeanDefinition ppc = new RootBeanDefinition(PropertyPlaceholderConfigurer.class);
+			ppc.getPropertyValues().add("properties", "myKey=foo");
+			wac.registerBeanDefinition("ppc", ppc);
 		}, DefaultExpressionValueParamController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/myApp/myPath.do");
@@ -267,41 +262,33 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 
 	@Test
 	public void typeNestedSetBinding() throws Exception {
-		initServlet(new ApplicationContextInitializer<GenericWebApplicationContext>() {
-			@Override
-			public void initialize(GenericWebApplicationContext context) {
-				RootBeanDefinition csDef = new RootBeanDefinition(FormattingConversionServiceFactoryBean.class);
-				csDef.getPropertyValues().add("converters", new TestBeanConverter());
-				RootBeanDefinition wbiDef = new RootBeanDefinition(ConfigurableWebBindingInitializer.class);
-				wbiDef.getPropertyValues().add("conversionService", csDef);
-				RootBeanDefinition adapterDef = new RootBeanDefinition(RequestMappingHandlerAdapter.class);
-				adapterDef.getPropertyValues().add("webBindingInitializer", wbiDef);
-				context.registerBeanDefinition("handlerAdapter", adapterDef);
-			}
+		initServlet(wac -> {
+			RootBeanDefinition csDef = new RootBeanDefinition(FormattingConversionServiceFactoryBean.class);
+			csDef.getPropertyValues().add("converters", new TestBeanConverter());
+			RootBeanDefinition wbiDef = new RootBeanDefinition(ConfigurableWebBindingInitializer.class);
+			wbiDef.getPropertyValues().add("conversionService", csDef);
+			RootBeanDefinition adapterDef = new RootBeanDefinition(RequestMappingHandlerAdapter.class);
+			adapterDef.getPropertyValues().add("webBindingInitializer", wbiDef);
+			wac.registerBeanDefinition("handlerAdapter", adapterDef);
 		}, NestedSetController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/myPath.do");
-		request.addParameter("testBeanSet", new String[] {"1", "2"});
+		request.addParameter("testBeanSet", "1", "2");
 		MockHttpServletResponse response = new MockHttpServletResponse();
 		getServlet().service(request, response);
 		assertEquals("[1, 2]-org.springframework.tests.sample.beans.TestBean", response.getContentAsString());
 	}
 
-	// SPR-12903
-
-	@Test
+	@Test  // SPR-12903
 	public void pathVariableWithCustomConverter() throws Exception {
-		initServlet(new ApplicationContextInitializer<GenericWebApplicationContext>() {
-			@Override
-			public void initialize(GenericWebApplicationContext context) {
-				RootBeanDefinition csDef = new RootBeanDefinition(FormattingConversionServiceFactoryBean.class);
-				csDef.getPropertyValues().add("converters", new AnnotatedExceptionRaisingConverter());
-				RootBeanDefinition wbiDef = new RootBeanDefinition(ConfigurableWebBindingInitializer.class);
-				wbiDef.getPropertyValues().add("conversionService", csDef);
-				RootBeanDefinition adapterDef = new RootBeanDefinition(RequestMappingHandlerAdapter.class);
-				adapterDef.getPropertyValues().add("webBindingInitializer", wbiDef);
-				context.registerBeanDefinition("handlerAdapter", adapterDef);
-			}
+		initServlet(wac -> {
+			RootBeanDefinition csDef = new RootBeanDefinition(FormattingConversionServiceFactoryBean.class);
+			csDef.getPropertyValues().add("converters", new AnnotatedExceptionRaisingConverter());
+			RootBeanDefinition wbiDef = new RootBeanDefinition(ConfigurableWebBindingInitializer.class);
+			wbiDef.getPropertyValues().add("conversionService", csDef);
+			RootBeanDefinition adapterDef = new RootBeanDefinition(RequestMappingHandlerAdapter.class);
+			adapterDef.getPropertyValues().add("webBindingInitializer", wbiDef);
+			wac.registerBeanDefinition("handlerAdapter", adapterDef);
 		}, PathVariableWithCustomConverterController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/myPath/1");
@@ -333,13 +320,10 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 
 	@Test
 	public void emptyParameterListHandleMethod() throws Exception {
-		initServlet(new ApplicationContextInitializer<GenericWebApplicationContext>() {
-			@Override
-			public void initialize(GenericWebApplicationContext context) {
-				RootBeanDefinition vrDef = new RootBeanDefinition(InternalResourceViewResolver.class);
-				vrDef.getPropertyValues().add("suffix", ".jsp");
-				context.registerBeanDefinition("viewResolver", vrDef);
-			}
+		initServlet(wac -> {
+			RootBeanDefinition vrDef = new RootBeanDefinition(InternalResourceViewResolver.class);
+			vrDef.getPropertyValues().add("suffix", ".jsp");
+			wac.registerBeanDefinition("viewResolver", vrDef);
 		}, EmptyParameterListHandlerMethodController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/emptyParameterListHandler");
@@ -354,12 +338,9 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 	@SuppressWarnings("rawtypes")
 	@Test
 	public void sessionAttributeExposure() throws Exception {
-		initServlet(new ApplicationContextInitializer<GenericWebApplicationContext>() {
-			@Override
-			public void initialize(GenericWebApplicationContext context) {
-				context.registerBeanDefinition("viewResolver", new RootBeanDefinition(ModelExposingViewResolver.class));
-			}
-		}, MySessionAttributesController.class);
+		initServlet(
+				wac -> wac.registerBeanDefinition("viewResolver", new RootBeanDefinition(ModelExposingViewResolver.class)),
+				MySessionAttributesController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/myPage");
 		MockHttpServletResponse response = new MockHttpServletResponse();
@@ -385,15 +366,12 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 	@SuppressWarnings("rawtypes")
 	@Test
 	public void sessionAttributeExposureWithInterface() throws Exception {
-		initServlet(new ApplicationContextInitializer<GenericWebApplicationContext>() {
-			@Override
-			public void initialize(GenericWebApplicationContext context) {
-				context.registerBeanDefinition("viewResolver", new RootBeanDefinition(ModelExposingViewResolver.class));
-				DefaultAdvisorAutoProxyCreator autoProxyCreator = new DefaultAdvisorAutoProxyCreator();
-				autoProxyCreator.setBeanFactory(context.getBeanFactory());
-				context.getBeanFactory().addBeanPostProcessor(autoProxyCreator);
-				context.getBeanFactory().registerSingleton("advisor", new DefaultPointcutAdvisor(new SimpleTraceInterceptor()));
-			}
+		initServlet(wac -> {
+			wac.registerBeanDefinition("viewResolver", new RootBeanDefinition(ModelExposingViewResolver.class));
+			DefaultAdvisorAutoProxyCreator autoProxyCreator = new DefaultAdvisorAutoProxyCreator();
+			autoProxyCreator.setBeanFactory(wac.getBeanFactory());
+			wac.getBeanFactory().addBeanPostProcessor(autoProxyCreator);
+			wac.getBeanFactory().registerSingleton("advisor", new DefaultPointcutAdvisor(new SimpleTraceInterceptor()));
 		}, MySessionAttributesControllerImpl.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/myPage");
@@ -420,12 +398,9 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 	@SuppressWarnings("rawtypes")
 	@Test
 	public void parameterizedAnnotatedInterface() throws Exception {
-		initServlet(new ApplicationContextInitializer<GenericWebApplicationContext>() {
-			@Override
-			public void initialize(GenericWebApplicationContext context) {
-				context.registerBeanDefinition("viewResolver", new RootBeanDefinition(ModelExposingViewResolver.class));
-			}
-		}, MyParameterizedControllerImpl.class);
+		initServlet(
+				wac -> wac.registerBeanDefinition("viewResolver", new RootBeanDefinition(ModelExposingViewResolver.class)),
+				MyParameterizedControllerImpl.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/myPage");
 		MockHttpServletResponse response = new MockHttpServletResponse();
@@ -453,12 +428,9 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 	@SuppressWarnings("rawtypes")
 	@Test
 	public void parameterizedAnnotatedInterfaceWithOverriddenMappingsInImpl() throws Exception {
-		initServlet(new ApplicationContextInitializer<GenericWebApplicationContext>() {
-			@Override
-			public void initialize(GenericWebApplicationContext context) {
-				context.registerBeanDefinition("viewResolver", new RootBeanDefinition(ModelExposingViewResolver.class));
-			}
-		}, MyParameterizedControllerImplWithOverriddenMappings.class);
+		initServlet(
+				wac -> wac.registerBeanDefinition("viewResolver", new RootBeanDefinition(ModelExposingViewResolver.class)),
+				MyParameterizedControllerImplWithOverriddenMappings.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/myPage");
 		MockHttpServletResponse response = new MockHttpServletResponse();
@@ -538,12 +510,9 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 
 	@Test
 	public void formController() throws Exception {
-		initServlet(new ApplicationContextInitializer<GenericWebApplicationContext>() {
-			@Override
-			public void initialize(GenericWebApplicationContext wac) {
-				wac.registerBeanDefinition("viewResolver", new RootBeanDefinition(TestViewResolver.class));
-			}
-		}, MyFormController.class);
+		initServlet(
+				wac -> wac.registerBeanDefinition("viewResolver", new RootBeanDefinition(TestViewResolver.class)),
+				MyFormController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/myPath.do");
 		request.addParameter("name", "name1");
@@ -555,12 +524,9 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 
 	@Test
 	public void modelFormController() throws Exception {
-		initServlet(new ApplicationContextInitializer<GenericWebApplicationContext>() {
-			@Override
-			public void initialize(GenericWebApplicationContext wac) {
-				wac.registerBeanDefinition("viewResolver", new RootBeanDefinition(TestViewResolver.class));
-			}
-		}, MyModelFormController.class);
+		initServlet(
+				wac -> wac.registerBeanDefinition("viewResolver", new RootBeanDefinition(TestViewResolver.class)),
+				MyModelFormController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/myPath.do");
 		request.addParameter("name", "name1");
@@ -571,17 +537,28 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 	}
 
 	@Test
+	public void lateBindingFormController() throws Exception {
+		initServlet(
+				wac -> wac.registerBeanDefinition("viewResolver", new RootBeanDefinition(TestViewResolver.class)),
+				LateBindingFormController.class);
+
+		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/myPath.do");
+		request.addParameter("name", "name1");
+		request.addParameter("age", "value2");
+		MockHttpServletResponse response = new MockHttpServletResponse();
+		getServlet().service(request, response);
+		assertEquals("myView-name1-typeMismatch-tb1-myValue", response.getContentAsString());
+	}
+
+	@Test
 	public void proxiedFormController() throws Exception {
-		initServlet(new ApplicationContextInitializer<GenericWebApplicationContext>() {
-			@Override
-			public void initialize(GenericWebApplicationContext wac) {
-				wac.registerBeanDefinition("viewResolver", new RootBeanDefinition(TestViewResolver.class));
-				DefaultAdvisorAutoProxyCreator autoProxyCreator = new DefaultAdvisorAutoProxyCreator();
-				autoProxyCreator.setBeanFactory(wac.getBeanFactory());
-				wac.getBeanFactory().addBeanPostProcessor(autoProxyCreator);
-				wac.getBeanFactory()
-						.registerSingleton("advisor", new DefaultPointcutAdvisor(new SimpleTraceInterceptor()));
-			}
+		initServlet(wac -> {
+			wac.registerBeanDefinition("viewResolver", new RootBeanDefinition(TestViewResolver.class));
+			DefaultAdvisorAutoProxyCreator autoProxyCreator = new DefaultAdvisorAutoProxyCreator();
+			autoProxyCreator.setBeanFactory(wac.getBeanFactory());
+			wac.getBeanFactory().addBeanPostProcessor(autoProxyCreator);
+			wac.getBeanFactory()
+					.registerSingleton("advisor", new DefaultPointcutAdvisor(new SimpleTraceInterceptor()));
 		}, MyFormController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/myPath.do");
@@ -594,14 +571,11 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 
 	@Test
 	public void commandProvidingFormControllerWithCustomEditor() throws Exception {
-		initServlet(new ApplicationContextInitializer<GenericWebApplicationContext>() {
-			@Override
-			public void initialize(GenericWebApplicationContext wac) {
-				wac.registerBeanDefinition("viewResolver", new RootBeanDefinition(TestViewResolver.class));
-				RootBeanDefinition adapterDef = new RootBeanDefinition(RequestMappingHandlerAdapter.class);
-				adapterDef.getPropertyValues().add("webBindingInitializer", new MyWebBindingInitializer());
-				wac.registerBeanDefinition("handlerAdapter", adapterDef);
-			}
+		initServlet(wac -> {
+			wac.registerBeanDefinition("viewResolver", new RootBeanDefinition(TestViewResolver.class));
+			RootBeanDefinition adapterDef = new RootBeanDefinition(RequestMappingHandlerAdapter.class);
+			adapterDef.getPropertyValues().add("webBindingInitializer", new MyWebBindingInitializer());
+			wac.registerBeanDefinition("handlerAdapter", adapterDef);
 		}, MyCommandProvidingFormController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/myPath.do");
@@ -615,17 +589,14 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 
 	@Test
 	public void typedCommandProvidingFormController() throws Exception {
-		initServlet(new ApplicationContextInitializer<GenericWebApplicationContext>() {
-			@Override
-			public void initialize(GenericWebApplicationContext wac) {
-				wac.registerBeanDefinition("viewResolver", new RootBeanDefinition(TestViewResolver.class));
-				RootBeanDefinition adapterDef = new RootBeanDefinition(RequestMappingHandlerAdapter.class);
-				adapterDef.getPropertyValues().add("webBindingInitializer", new MyWebBindingInitializer());
-				List<HandlerMethodArgumentResolver> argumentResolvers = new ArrayList<>();
-				argumentResolvers.add(new ServletWebArgumentResolverAdapter(new MySpecialArgumentResolver()));
-				adapterDef.getPropertyValues().add("customArgumentResolvers", argumentResolvers);
-				wac.registerBeanDefinition("handlerAdapter", adapterDef);
-			}
+		initServlet(wac -> {
+			wac.registerBeanDefinition("viewResolver", new RootBeanDefinition(TestViewResolver.class));
+			RootBeanDefinition adapterDef = new RootBeanDefinition(RequestMappingHandlerAdapter.class);
+			adapterDef.getPropertyValues().add("webBindingInitializer", new MyWebBindingInitializer());
+			List<HandlerMethodArgumentResolver> argumentResolvers = new ArrayList<>();
+			argumentResolvers.add(new ServletWebArgumentResolverAdapter(new MySpecialArgumentResolver()));
+			adapterDef.getPropertyValues().add("customArgumentResolvers", argumentResolvers);
+			wac.registerBeanDefinition("handlerAdapter", adapterDef);
 		}, MyTypedCommandProvidingFormController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/myPath.do");
@@ -655,12 +626,9 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 
 	@Test
 	public void binderInitializingCommandProvidingFormController() throws Exception {
-		initServlet(new ApplicationContextInitializer<GenericWebApplicationContext>() {
-			@Override
-			public void initialize(GenericWebApplicationContext wac) {
-				wac.registerBeanDefinition("viewResolver", new RootBeanDefinition(TestViewResolver.class));
-			}
-		}, MyBinderInitializingCommandProvidingFormController.class);
+		initServlet(wac -> wac.registerBeanDefinition("viewResolver",
+				new RootBeanDefinition(TestViewResolver.class)),
+				MyBinderInitializingCommandProvidingFormController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/myPath.do");
 		request.addParameter("defaultName", "myDefaultName");
@@ -673,12 +641,9 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 
 	@Test
 	public void specificBinderInitializingCommandProvidingFormController() throws Exception {
-		initServlet(new ApplicationContextInitializer<GenericWebApplicationContext>() {
-			@Override
-			public void initialize(GenericWebApplicationContext wac) {
-				wac.registerBeanDefinition("viewResolver", new RootBeanDefinition(TestViewResolver.class));
-			}
-		}, MySpecificBinderInitializingCommandProvidingFormController.class);
+		initServlet(wac -> wac.registerBeanDefinition("viewResolver",
+				new RootBeanDefinition(TestViewResolver.class)),
+				MySpecificBinderInitializingCommandProvidingFormController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/myPath.do");
 		request.addParameter("defaultName", "myDefaultName");
@@ -694,15 +659,12 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 		final MockServletContext servletContext = new MockServletContext();
 		final MockServletConfig servletConfig = new MockServletConfig(servletContext);
 
-		WebApplicationContext  webAppContext =
-			initServlet(new ApplicationContextInitializer<GenericWebApplicationContext>() {
-				@Override
-				public void initialize(GenericWebApplicationContext wac) {
-					wac.setServletContext(servletContext);
-					AnnotationConfigUtils.registerAnnotationConfigProcessors(wac);
-					wac.getBeanFactory().registerResolvableDependency(ServletConfig.class, servletConfig);
-				}
-		}, MyParameterDispatchingController.class);
+		WebApplicationContext webAppContext =
+			initServlet(wac -> {
+				wac.setServletContext(servletContext);
+				AnnotationConfigUtils.registerAnnotationConfigProcessors(wac);
+				wac.getBeanFactory().registerResolvableDependency(ServletConfig.class, servletConfig);
+			}, MyParameterDispatchingController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest(servletContext, "GET", "/myPath.do");
 		MockHttpServletResponse response = new MockHttpServletResponse();
@@ -828,7 +790,7 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 	}
 
 	@Test
-	public void pathOrdering() throws ServletException, IOException {
+	public void pathOrdering() throws Exception {
 		initServletWithControllers(PathOrderingController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/dir/myPath1.do");
@@ -838,7 +800,7 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 	}
 
 	@Test
-	public void requestBodyResponseBody() throws ServletException, IOException {
+	public void requestBodyResponseBody() throws Exception {
 		initServletWithControllers(RequestResponseBodyController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("PUT", "/something");
@@ -853,7 +815,7 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 	}
 
 	@Test
-	public void httpPatch() throws ServletException, IOException {
+	public void httpPatch() throws Exception {
 		initServletWithControllers(RequestResponseBodyController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("PATCH", "/something");
@@ -868,15 +830,12 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 	}
 
 	@Test
-	public void responseBodyNoAcceptableMediaType() throws ServletException, IOException {
-		initServlet(new ApplicationContextInitializer<GenericWebApplicationContext>() {
-			@Override
-			public void initialize(GenericWebApplicationContext wac) {
-				RootBeanDefinition adapterDef = new RootBeanDefinition(RequestMappingHandlerAdapter.class);
-				StringHttpMessageConverter converter = new StringHttpMessageConverter();
-				adapterDef.getPropertyValues().add("messageConverters", converter);
-				wac.registerBeanDefinition("handlerAdapter", adapterDef);
-			}
+	public void responseBodyNoAcceptableMediaType() throws Exception {
+		initServlet(wac -> {
+			RootBeanDefinition adapterDef = new RootBeanDefinition(RequestMappingHandlerAdapter.class);
+			StringHttpMessageConverter converter = new StringHttpMessageConverter();
+			adapterDef.getPropertyValues().add("messageConverters", converter);
+			wac.registerBeanDefinition("handlerAdapter", adapterDef);
 		}, RequestResponseBodyProducesController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("PUT", "/something");
@@ -890,7 +849,7 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 	}
 
 	@Test
-	public void responseBodyWildCardMediaType() throws ServletException, IOException {
+	public void responseBodyWildCardMediaType() throws Exception {
 		initServletWithControllers(RequestResponseBodyController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("PUT", "/something");
@@ -904,14 +863,11 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 	}
 
 	@Test
-	public void unsupportedRequestBody() throws ServletException, IOException {
-		initServlet(new ApplicationContextInitializer<GenericWebApplicationContext>() {
-			@Override
-			public void initialize(GenericWebApplicationContext wac) {
-				RootBeanDefinition adapterDef = new RootBeanDefinition(RequestMappingHandlerAdapter.class);
-				adapterDef.getPropertyValues().add("messageConverters", new ByteArrayHttpMessageConverter());
-				wac.registerBeanDefinition("handlerAdapter", adapterDef);
-			}
+	public void unsupportedRequestBody() throws Exception {
+		initServlet(wac -> {
+			RootBeanDefinition adapterDef = new RootBeanDefinition(RequestMappingHandlerAdapter.class);
+			adapterDef.getPropertyValues().add("messageConverters", new ByteArrayHttpMessageConverter());
+			wac.registerBeanDefinition("handlerAdapter", adapterDef);
 		}, RequestResponseBodyController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("PUT", "/something");
@@ -925,7 +881,7 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 	}
 
 	@Test
-	public void responseBodyNoAcceptHeader() throws ServletException, IOException {
+	public void responseBodyNoAcceptHeader() throws Exception {
 		initServletWithControllers(RequestResponseBodyController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("PUT", "/something");
@@ -939,14 +895,11 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 	}
 
 	@Test
-	public void badRequestRequestBody() throws ServletException, IOException {
-		initServlet(new ApplicationContextInitializer<GenericWebApplicationContext>() {
-			@Override
-			public void initialize(GenericWebApplicationContext wac) {
-				RootBeanDefinition adapterDef = new RootBeanDefinition(RequestMappingHandlerAdapter.class);
-				adapterDef.getPropertyValues().add("messageConverters", new NotReadableMessageConverter());
-				wac.registerBeanDefinition("handlerAdapter", adapterDef);
-			}
+	public void badRequestRequestBody() throws Exception {
+		initServlet(wac -> {
+			RootBeanDefinition adapterDef = new RootBeanDefinition(RequestMappingHandlerAdapter.class);
+			adapterDef.getPropertyValues().add("messageConverters", new NotReadableMessageConverter());
+			wac.registerBeanDefinition("handlerAdapter", adapterDef);
 		}, RequestResponseBodyController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("PUT", "/something");
@@ -959,7 +912,7 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 	}
 
 	@Test
-	public void httpEntity() throws ServletException, IOException {
+	public void httpEntity() throws Exception {
 		initServletWithControllers(ResponseEntityController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("POST", "/foo");
@@ -981,23 +934,16 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 		assertEquals(404, response.getStatus());
 	}
 
-
-	/*
-	 * See SPR-6877
-	 */
-	@Test
-	public void overlappingMessageConvertersRequestBody() throws ServletException, IOException {
-		initServlet(new ApplicationContextInitializer<GenericWebApplicationContext>() {
-			@Override
-			public void initialize(GenericWebApplicationContext wac) {
-				RootBeanDefinition adapterDef = new RootBeanDefinition(RequestMappingHandlerAdapter.class);
-				List<HttpMessageConverter<?>> messageConverters = new ArrayList<>();
-				messageConverters.add(new StringHttpMessageConverter());
-				messageConverters
-						.add(new SimpleMessageConverter(new MediaType("application","json"), MediaType.ALL));
-				adapterDef.getPropertyValues().add("messageConverters", messageConverters);
-				wac.registerBeanDefinition("handlerAdapter", adapterDef);
-			}
+	@Test  // SPR-6877
+	public void overlappingMessageConvertersRequestBody() throws Exception {
+		initServlet(wac -> {
+			RootBeanDefinition adapterDef = new RootBeanDefinition(RequestMappingHandlerAdapter.class);
+			List<HttpMessageConverter<?>> messageConverters = new ArrayList<>();
+			messageConverters.add(new StringHttpMessageConverter());
+			messageConverters
+					.add(new SimpleMessageConverter(new MediaType("application","json"), MediaType.ALL));
+			adapterDef.getPropertyValues().add("messageConverters", messageConverters);
+			wac.registerBeanDefinition("handlerAdapter", adapterDef);
 		}, RequestResponseBodyController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("PUT", "/something");
@@ -1010,7 +956,7 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 	}
 
 	@Test
-	public void responseBodyVoid() throws ServletException, IOException {
+	public void responseBodyVoid() throws Exception {
 		initServletWithControllers(ResponseBodyVoidController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/something");
@@ -1021,24 +967,21 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 	}
 
 	@Test
-	public void responseBodyArgMismatch() throws ServletException, IOException {
-		initServlet(new ApplicationContextInitializer<GenericWebApplicationContext>() {
-			@Override
-			public void initialize(GenericWebApplicationContext wac) {
-				Jaxb2Marshaller marshaller = new Jaxb2Marshaller();
-				marshaller.setClassesToBeBound(A.class, B.class);
-				try {
-					marshaller.afterPropertiesSet();
-				}
-				catch (Exception ex) {
-					throw new BeanCreationException(ex.getMessage(), ex);
-				}
-				MarshallingHttpMessageConverter messageConverter = new MarshallingHttpMessageConverter(marshaller);
-
-				RootBeanDefinition adapterDef = new RootBeanDefinition(RequestMappingHandlerAdapter.class);
-				adapterDef.getPropertyValues().add("messageConverters", messageConverter);
-				wac.registerBeanDefinition("handlerAdapter", adapterDef);
+	public void responseBodyArgMismatch() throws Exception {
+		initServlet(wac -> {
+			Jaxb2Marshaller marshaller = new Jaxb2Marshaller();
+			marshaller.setClassesToBeBound(A.class, B.class);
+			try {
+				marshaller.afterPropertiesSet();
 			}
+			catch (Exception ex) {
+				throw new BeanCreationException(ex.getMessage(), ex);
+			}
+			MarshallingHttpMessageConverter messageConverter = new MarshallingHttpMessageConverter(marshaller);
+
+			RootBeanDefinition adapterDef = new RootBeanDefinition(RequestMappingHandlerAdapter.class);
+			adapterDef.getPropertyValues().add("messageConverters", messageConverter);
+			wac.registerBeanDefinition("handlerAdapter", adapterDef);
 		}, RequestBodyArgMismatchController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("PUT", "/something");
@@ -1052,7 +995,7 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 
 
 	@Test
-	public void contentTypeHeaders() throws ServletException, IOException {
+	public void contentTypeHeaders() throws Exception {
 		initServletWithControllers(ContentTypeHeadersController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("POST", "/something");
@@ -1075,7 +1018,7 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 	}
 
 	@Test
-	public void consumes() throws ServletException, IOException {
+	public void consumes() throws Exception {
 		initServletWithControllers(ConsumesController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("POST", "/something");
@@ -1098,7 +1041,7 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 	}
 
 	@Test
-	public void negatedContentTypeHeaders() throws ServletException, IOException {
+	public void negatedContentTypeHeaders() throws Exception {
 		initServletWithControllers(NegatedContentTypeHeadersController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("POST", "/something");
@@ -1115,7 +1058,7 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 	}
 
 	@Test
-	public void acceptHeaders() throws ServletException, IOException {
+	public void acceptHeaders() throws Exception {
 		initServletWithControllers(AcceptHeadersController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/something");
@@ -1150,7 +1093,7 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 	}
 
 	@Test
-	public void produces() throws ServletException, IOException {
+	public void produces() throws Exception {
 		initServletWithControllers(ProducesController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/something");
@@ -1185,7 +1128,7 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 	}
 
 	@Test
-	public void responseStatus() throws ServletException, IOException {
+	public void responseStatus() throws Exception {
 		initServletWithControllers(ResponseStatusController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/something");
@@ -1197,15 +1140,12 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 	}
 
 	@Test
-	public void mavResolver() throws ServletException, IOException {
-		initServlet(new ApplicationContextInitializer<GenericWebApplicationContext>() {
-			@Override
-			public void initialize(GenericWebApplicationContext wac) {
-				RootBeanDefinition adapterDef = new RootBeanDefinition(RequestMappingHandlerAdapter.class);
-				ModelAndViewResolver[] mavResolvers = new ModelAndViewResolver[] {new MyModelAndViewResolver()};
-				adapterDef.getPropertyValues().add("modelAndViewResolvers", mavResolvers);
-				wac.registerBeanDefinition("handlerAdapter", adapterDef);
-			}
+	public void mavResolver() throws Exception {
+		initServlet(wac -> {
+			RootBeanDefinition adapterDef = new RootBeanDefinition(RequestMappingHandlerAdapter.class);
+			ModelAndViewResolver[] mavResolvers = new ModelAndViewResolver[] {new MyModelAndViewResolver()};
+			adapterDef.getPropertyValues().add("modelAndViewResolvers", mavResolvers);
+			wac.registerBeanDefinition("handlerAdapter", adapterDef);
 		}, ModelAndViewResolverController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/");
@@ -1216,7 +1156,7 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 	}
 
 	@Test
-	public void bindingCookieValue() throws ServletException, IOException {
+	public void bindingCookieValue() throws Exception {
 		initServletWithControllers(BindingCookieValueController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/test");
@@ -1227,7 +1167,7 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 	}
 
 	@Test
-	public void ambiguousParams() throws ServletException, IOException {
+	public void ambiguousParams() throws Exception {
 		initServletWithControllers(AmbiguousParamsController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/test");
@@ -1242,9 +1182,7 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 		assertEquals("myParam-42", response.getContentAsString());
 	}
 
-	// SPR-9062
-
-	@Test
+	@Test  // SPR-9062
 	public void ambiguousPathAndRequestMethod() throws Exception {
 		initServletWithControllers(AmbiguousPathAndRequestMethodController.class);
 
@@ -1327,14 +1265,11 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 
 	@Test
 	public void requestMappingInterfaceWithProxy() throws Exception {
-		initServlet(new ApplicationContextInitializer<GenericWebApplicationContext>() {
-			@Override
-			public void initialize(GenericWebApplicationContext wac) {
-				DefaultAdvisorAutoProxyCreator autoProxyCreator = new DefaultAdvisorAutoProxyCreator();
-				autoProxyCreator.setBeanFactory(wac.getBeanFactory());
-				wac.getBeanFactory().addBeanPostProcessor(autoProxyCreator);
-				wac.getBeanFactory().registerSingleton("advisor", new DefaultPointcutAdvisor(new SimpleTraceInterceptor()));
-			}
+		initServlet(wac -> {
+			DefaultAdvisorAutoProxyCreator autoProxyCreator = new DefaultAdvisorAutoProxyCreator();
+			autoProxyCreator.setBeanFactory(wac.getBeanFactory());
+			wac.getBeanFactory().addBeanPostProcessor(autoProxyCreator);
+			wac.getBeanFactory().registerSingleton("advisor", new DefaultPointcutAdvisor(new SimpleTraceInterceptor()));
 		}, IMyControllerImpl.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/handle");
@@ -1465,16 +1400,13 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 
 	@Test
 	public void parameterCsvAsStringArray() throws Exception {
-		initServlet(new ApplicationContextInitializer<GenericWebApplicationContext>() {
-			@Override
-			public void initialize(GenericWebApplicationContext wac) {
-				RootBeanDefinition csDef = new RootBeanDefinition(FormattingConversionServiceFactoryBean.class);
-				RootBeanDefinition wbiDef = new RootBeanDefinition(ConfigurableWebBindingInitializer.class);
-				wbiDef.getPropertyValues().add("conversionService", csDef);
-				RootBeanDefinition adapterDef = new RootBeanDefinition(RequestMappingHandlerAdapter.class);
-				adapterDef.getPropertyValues().add("webBindingInitializer", wbiDef);
-				wac.registerBeanDefinition("handlerAdapter", adapterDef);
-			}
+		initServlet(wac -> {
+			RootBeanDefinition csDef = new RootBeanDefinition(FormattingConversionServiceFactoryBean.class);
+			RootBeanDefinition wbiDef = new RootBeanDefinition(ConfigurableWebBindingInitializer.class);
+			wbiDef.getPropertyValues().add("conversionService", csDef);
+			RootBeanDefinition adapterDef = new RootBeanDefinition(RequestMappingHandlerAdapter.class);
+			adapterDef.getPropertyValues().add("webBindingInitializer", wbiDef);
+			wac.registerBeanDefinition("handlerAdapter", adapterDef);
 		}, CsvController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest();
@@ -1496,9 +1428,7 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 		assertEquals(405, response.getStatus());
 	}
 
-	// SPR-8536
-
-	@Test
+	@Test  // SPR-8536
 	public void testHeadersCondition() throws Exception {
 		initServletWithControllers(HeadersConditionController.class);
 
@@ -1569,15 +1499,38 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 		assertTrue(RequestContextUtils.getOutputFlashMap(request).isEmpty());
 	}
 
+	@Test  // SPR-15176
+	public void flashAttributesWithResponseEntity() throws Exception {
+		initServletWithControllers(RedirectAttributesController.class);
+
+		MockHttpServletRequest request = new MockHttpServletRequest("POST", "/messages-response-entity");
+		MockHttpServletResponse response = new MockHttpServletResponse();
+		HttpSession session = request.getSession();
+
+		getServlet().service(request, response);
+
+		assertEquals(302, response.getStatus());
+		assertEquals("/messages/1?name=value", response.getRedirectedUrl());
+		assertEquals("yay!", RequestContextUtils.getOutputFlashMap(request).get("successMessage"));
+
+		// GET after POST
+		request = new MockHttpServletRequest("GET", "/messages/1");
+		request.setQueryString("name=value");
+		request.setSession(session);
+		response = new MockHttpServletResponse();
+		getServlet().service(request, response);
+
+		assertEquals(200, response.getStatus());
+		assertEquals("Got: yay!", response.getContentAsString());
+		assertTrue(RequestContextUtils.getOutputFlashMap(request).isEmpty());
+	}
+
 	@Test
 	public void prototypeController() throws Exception {
-		initServlet(new ApplicationContextInitializer<GenericWebApplicationContext>() {
-			@Override
-			public void initialize(GenericWebApplicationContext context) {
-				RootBeanDefinition beanDef = new RootBeanDefinition(PrototypeController.class);
-				beanDef.setScope(BeanDefinition.SCOPE_PROTOTYPE);
-				context.registerBeanDefinition("controller", beanDef);
-			}
+		initServlet(wac -> {
+			RootBeanDefinition beanDef = new RootBeanDefinition(PrototypeController.class);
+			beanDef.setScope(BeanDefinition.SCOPE_PROTOTYPE);
+			wac.registerBeanDefinition("controller", beanDef);
 		});
 
 		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/");
@@ -1628,15 +1581,12 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 
 	@Test
 	public void responseBodyAsHtml() throws Exception {
-		initServlet(new ApplicationContextInitializer<GenericWebApplicationContext>() {
-			@Override
-			public void initialize(GenericWebApplicationContext wac) {
-				ContentNegotiationManagerFactoryBean factoryBean = new ContentNegotiationManagerFactoryBean();
-				factoryBean.afterPropertiesSet();
-				RootBeanDefinition adapterDef = new RootBeanDefinition(RequestMappingHandlerAdapter.class);
-				adapterDef.getPropertyValues().add("contentNegotiationManager", factoryBean.getObject());
-				wac.registerBeanDefinition("handlerAdapter", adapterDef);
-			}
+		initServlet(wac -> {
+			ContentNegotiationManagerFactoryBean factoryBean = new ContentNegotiationManagerFactoryBean();
+			factoryBean.afterPropertiesSet();
+			RootBeanDefinition adapterDef = new RootBeanDefinition(RequestMappingHandlerAdapter.class);
+			adapterDef.getPropertyValues().add("contentNegotiationManager", factoryBean.getObject());
+			wac.registerBeanDefinition("handlerAdapter", adapterDef);
 		}, TextRestController.class);
 
 		byte[] content = "alert('boo')".getBytes(StandardCharsets.ISO_8859_1);
@@ -1654,15 +1604,12 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 
 	@Test
 	public void responseBodyAsHtmlWithSuffixPresent() throws Exception {
-		initServlet(new ApplicationContextInitializer<GenericWebApplicationContext>() {
-			@Override
-			public void initialize(GenericWebApplicationContext wac) {
-				ContentNegotiationManagerFactoryBean factoryBean = new ContentNegotiationManagerFactoryBean();
-				factoryBean.afterPropertiesSet();
-				RootBeanDefinition adapterDef = new RootBeanDefinition(RequestMappingHandlerAdapter.class);
-				adapterDef.getPropertyValues().add("contentNegotiationManager", factoryBean.getObject());
-				wac.registerBeanDefinition("handlerAdapter", adapterDef);
-			}
+		initServlet(wac -> {
+			ContentNegotiationManagerFactoryBean factoryBean = new ContentNegotiationManagerFactoryBean();
+			factoryBean.afterPropertiesSet();
+			RootBeanDefinition adapterDef = new RootBeanDefinition(RequestMappingHandlerAdapter.class);
+			adapterDef.getPropertyValues().add("contentNegotiationManager", factoryBean.getObject());
+			wac.registerBeanDefinition("handlerAdapter", adapterDef);
 		}, TextRestController.class);
 
 		byte[] content = "alert('boo')".getBytes(StandardCharsets.ISO_8859_1);
@@ -1680,15 +1627,12 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 
 	@Test
 	public void responseBodyAsHtmlWithProducesCondition() throws Exception {
-		initServlet(new ApplicationContextInitializer<GenericWebApplicationContext>() {
-			@Override
-			public void initialize(GenericWebApplicationContext wac) {
-				ContentNegotiationManagerFactoryBean factoryBean = new ContentNegotiationManagerFactoryBean();
-				factoryBean.afterPropertiesSet();
-				RootBeanDefinition adapterDef = new RootBeanDefinition(RequestMappingHandlerAdapter.class);
-				adapterDef.getPropertyValues().add("contentNegotiationManager", factoryBean.getObject());
-				wac.registerBeanDefinition("handlerAdapter", adapterDef);
-			}
+		initServlet(wac -> {
+			ContentNegotiationManagerFactoryBean factoryBean = new ContentNegotiationManagerFactoryBean();
+			factoryBean.afterPropertiesSet();
+			RootBeanDefinition adapterDef = new RootBeanDefinition(RequestMappingHandlerAdapter.class);
+			adapterDef.getPropertyValues().add("contentNegotiationManager", factoryBean.getObject());
+			wac.registerBeanDefinition("handlerAdapter", adapterDef);
 		}, TextRestController.class);
 
 		byte[] content = "alert('boo')".getBytes(StandardCharsets.ISO_8859_1);
@@ -1706,15 +1650,12 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 
 	@Test
 	public void responseBodyAsTextWithCssExtension() throws Exception {
-		initServlet(new ApplicationContextInitializer<GenericWebApplicationContext>() {
-			@Override
-			public void initialize(GenericWebApplicationContext wac) {
-				ContentNegotiationManagerFactoryBean factoryBean = new ContentNegotiationManagerFactoryBean();
-				factoryBean.afterPropertiesSet();
-				RootBeanDefinition adapterDef = new RootBeanDefinition(RequestMappingHandlerAdapter.class);
-				adapterDef.getPropertyValues().add("contentNegotiationManager", factoryBean.getObject());
-				wac.registerBeanDefinition("handlerAdapter", adapterDef);
-			}
+		initServlet(wac -> {
+			ContentNegotiationManagerFactoryBean factoryBean = new ContentNegotiationManagerFactoryBean();
+			factoryBean.afterPropertiesSet();
+			RootBeanDefinition adapterDef = new RootBeanDefinition(RequestMappingHandlerAdapter.class);
+			adapterDef.getPropertyValues().add("contentNegotiationManager", factoryBean.getObject());
+			wac.registerBeanDefinition("handlerAdapter", adapterDef);
 		}, TextRestController.class);
 
 		byte[] content = "body".getBytes(StandardCharsets.ISO_8859_1);
@@ -1742,8 +1683,20 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 		assertEquals("view", response.getForwardedUrl());
 	}
 
+	@Test // SPR-14796
+	public void modelAndViewWithStatusInExceptionHandler() throws Exception {
+		initServletWithControllers(ModelAndViewController.class);
+
+		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/exception");
+		MockHttpServletResponse response = new MockHttpServletResponse();
+		getServlet().service(request, response);
+
+		assertEquals(422, response.getStatus());
+		assertEquals("view", response.getForwardedUrl());
+	}
+
 	@Test
-	public void httpHead() throws ServletException, IOException {
+	public void httpHead() throws Exception {
 		initServletWithControllers(ResponseEntityController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("HEAD", "/baz");
@@ -1767,7 +1720,7 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 	}
 
 	@Test
-	public void httpHeadExplicit() throws ServletException, IOException {
+	public void httpHeadExplicit() throws Exception {
 		initServletWithControllers(ResponseEntityController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("HEAD", "/stores");
@@ -1779,7 +1732,7 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 	}
 
 	@Test
-	public void httpOptions() throws ServletException, IOException {
+	public void httpOptions() throws Exception {
 		initServletWithControllers(ResponseEntityController.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("OPTIONS", "/baz");
@@ -1789,6 +1742,165 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 		assertEquals(200, response.getStatus());
 		assertEquals("GET,HEAD", response.getHeader("Allow"));
 		assertTrue(response.getContentAsByteArray().length == 0);
+	}
+
+	@Test
+	public void dataClassBinding() throws Exception {
+		initServletWithControllers(DataClassController.class);
+
+		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/bind");
+		request.addParameter("param1", "value1");
+		request.addParameter("param2", "true");
+		MockHttpServletResponse response = new MockHttpServletResponse();
+		getServlet().service(request, response);
+		assertEquals("value1-true-0", response.getContentAsString());
+	}
+
+	@Test
+	public void dataClassBindingWithAdditionalSetter() throws Exception {
+		initServletWithControllers(DataClassController.class);
+
+		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/bind");
+		request.addParameter("param1", "value1");
+		request.addParameter("param2", "true");
+		request.addParameter("param3", "3");
+		MockHttpServletResponse response = new MockHttpServletResponse();
+		getServlet().service(request, response);
+		assertEquals("value1-true-3", response.getContentAsString());
+	}
+
+	@Test
+	public void dataClassBindingWithResult() throws Exception {
+		initServletWithControllers(ValidatedDataClassController.class);
+
+		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/bind");
+		request.addParameter("param1", "value1");
+		request.addParameter("param2", "true");
+		request.addParameter("param3", "3");
+		MockHttpServletResponse response = new MockHttpServletResponse();
+		getServlet().service(request, response);
+		assertEquals("value1-true-3", response.getContentAsString());
+	}
+
+	@Test
+	public void dataClassBindingWithOptionalParameter() throws Exception {
+		initServletWithControllers(ValidatedDataClassController.class);
+
+		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/bind");
+		request.addParameter("param1", "value1");
+		request.addParameter("param2", "true");
+		request.addParameter("optionalParam", "8");
+		MockHttpServletResponse response = new MockHttpServletResponse();
+		getServlet().service(request, response);
+		assertEquals("value1-true-8", response.getContentAsString());
+	}
+
+	@Test
+	public void dataClassBindingWithMissingParameter() throws Exception {
+		initServletWithControllers(ValidatedDataClassController.class);
+
+		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/bind");
+		request.addParameter("param1", "value1");
+		MockHttpServletResponse response = new MockHttpServletResponse();
+		getServlet().service(request, response);
+		assertTrue(response.getContentAsString().contains("field 'param2'"));
+	}
+
+	@Test
+	public void dataClassBindingWithConversionError() throws Exception {
+		initServletWithControllers(ValidatedDataClassController.class);
+
+		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/bind");
+		request.addParameter("param2", "x");
+		MockHttpServletResponse response = new MockHttpServletResponse();
+		getServlet().service(request, response);
+		assertTrue(response.getContentAsString().contains("field 'param2'"));
+	}
+
+	@Test
+	public void dataClassBindingWithValidationError() throws Exception {
+		initServletWithControllers(ValidatedDataClassController.class);
+
+		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/bind");
+		request.addParameter("param2", "true");
+		request.addParameter("param3", "3");
+		MockHttpServletResponse response = new MockHttpServletResponse();
+		getServlet().service(request, response);
+		assertTrue(response.getContentAsString().contains("field 'param1'"));
+	}
+
+	@Test
+	public void dataClassBindingWithOptional() throws Exception {
+		initServletWithControllers(OptionalDataClassController.class);
+
+		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/bind");
+		request.addParameter("param1", "value1");
+		request.addParameter("param2", "true");
+		request.addParameter("param3", "3");
+		MockHttpServletResponse response = new MockHttpServletResponse();
+		getServlet().service(request, response);
+		assertEquals("value1-true-3", response.getContentAsString());
+	}
+
+	@Test
+	public void dataClassBindingWithOptionalAndConversionError() throws Exception {
+		initServletWithControllers(OptionalDataClassController.class);
+
+		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/bind");
+		request.addParameter("param2", "x");
+		MockHttpServletResponse response = new MockHttpServletResponse();
+		getServlet().service(request, response);
+		assertTrue(response.getContentAsString().contains("field 'param2'"));
+	}
+
+	@Test
+	public void dataClassBindingWithFieldMarker() throws Exception {
+		initServletWithControllers(DataClassController.class);
+
+		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/bind");
+		request.addParameter("param1", "value1");
+		request.addParameter("param2", "true");
+		request.addParameter("_param2", "on");
+		MockHttpServletResponse response = new MockHttpServletResponse();
+		getServlet().service(request, response);
+		assertEquals("value1-true-0", response.getContentAsString());
+	}
+
+	@Test
+	public void dataClassBindingWithFieldMarkerFallback() throws Exception {
+		initServletWithControllers(DataClassController.class);
+
+		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/bind");
+		request.addParameter("param1", "value1");
+		request.addParameter("_param2", "on");
+		MockHttpServletResponse response = new MockHttpServletResponse();
+		getServlet().service(request, response);
+		assertEquals("value1-false-0", response.getContentAsString());
+	}
+
+	@Test
+	public void dataClassBindingWithFieldDefault() throws Exception {
+		initServletWithControllers(DataClassController.class);
+
+		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/bind");
+		request.addParameter("param1", "value1");
+		request.addParameter("param2", "true");
+		request.addParameter("!param2", "false");
+		MockHttpServletResponse response = new MockHttpServletResponse();
+		getServlet().service(request, response);
+		assertEquals("value1-true-0", response.getContentAsString());
+	}
+
+	@Test
+	public void dataClassBindingWithFieldDefaultFallback() throws Exception {
+		initServletWithControllers(DataClassController.class);
+
+		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/bind");
+		request.addParameter("param1", "value1");
+		request.addParameter("!param2", "false");
+		MockHttpServletResponse response = new MockHttpServletResponse();
+		getServlet().service(request, response);
+		assertEquals("value1-false-0", response.getContentAsString());
 	}
 
 
@@ -1892,12 +2004,16 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 		}
 
 		@InitBinder
-		public void initBinder(@RequestParam("param1") String p1, @RequestParam(value="paramX", required=false) String px, int param2) {
+		public void initBinder(@RequestParam("param1") String p1,
+				@RequestParam(value="paramX", required=false) String px, int param2) {
+
 			assertNull(px);
 		}
 
 		@ModelAttribute
-		public void modelAttribute(@RequestParam("param1") String p1, @RequestParam(value="paramX", required=false) String px, int param2) {
+		public void modelAttribute(@RequestParam("param1") String p1,
+				@RequestParam(value="paramX", required=false) String px, int param2) {
+
 			assertNull(px);
 		}
 	}
@@ -1928,13 +2044,17 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 
 		@Override
 		@InitBinder
-		public void initBinder(@RequestParam("param1") String p1, @RequestParam(value="paramX", required=false) String px, int param2) {
+		public void initBinder(@RequestParam("param1") String p1,
+				@RequestParam(value="paramX", required=false) String px, int param2) {
+
 			assertNull(px);
 		}
 
 		@Override
 		@ModelAttribute
-		public void modelAttribute(@RequestParam("param1") String p1, @RequestParam(value="paramX", required=false) String px, int param2) {
+		public void modelAttribute(@RequestParam("param1") String p1,
+				@RequestParam(value="paramX", required=false) String px, int param2) {
+
 			assertNull(px);
 		}
 	}
@@ -2046,7 +2166,8 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 	}
 
 	@Controller
-	public static class MyParameterizedControllerImplWithOverriddenMappings implements MyEditableParameterizedControllerIfc<TestBean> {
+	public static class MyParameterizedControllerImplWithOverriddenMappings
+			implements MyEditableParameterizedControllerIfc<TestBean> {
 
 		@Override
 		@ModelAttribute("testBeanList")
@@ -2132,13 +2253,37 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 	}
 
 	@Controller
+	public static class LateBindingFormController {
+
+		@ModelAttribute("testBeanList")
+		public List<TestBean> getTestBeans(@ModelAttribute(name="myCommand", binding=false) TestBean tb) {
+			List<TestBean> list = new LinkedList<>();
+			list.add(new TestBean("tb1"));
+			list.add(new TestBean("tb2"));
+			return list;
+		}
+
+		@RequestMapping("/myPath.do")
+		public String myHandle(@ModelAttribute(name="myCommand", binding=true) TestBean tb,
+				BindingResult errors, ModelMap model) {
+
+			FieldError error = errors.getFieldError("age");
+			assertNotNull("Must have field error for age property", error);
+			assertEquals("value2", error.getRejectedValue());
+			if (!model.containsKey("myKey")) {
+				model.addAttribute("myKey", "myValue");
+			}
+			return "myView";
+		}
+	}
+
+	@Controller
 	static class MyCommandProvidingFormController<T, TB, TB2> extends MyFormController {
 
-		@SuppressWarnings("unused")
 		@ModelAttribute("myCommand")
-		private ValidTestBean createTestBean(@RequestParam T defaultName,
-				Map<String, Object> model,
+		public ValidTestBean createTestBean(@RequestParam T defaultName, Map<String, Object> model,
 				@RequestParam Date date) {
+
 			model.put("myKey", "myOriginalValue");
 			ValidTestBean tb = new ValidTestBean();
 			tb.setName(defaultName.getClass().getSimpleName() + ":" + defaultName.toString());
@@ -2192,9 +2337,8 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 	static class MyBinderInitializingCommandProvidingFormController
 			extends MyCommandProvidingFormController<String, TestBean, ITestBean> {
 
-		@SuppressWarnings("unused")
 		@InitBinder
-		private void initBinder(WebDataBinder binder) {
+		public void initBinder(WebDataBinder binder) {
 			binder.initBeanPropertyAccess();
 			binder.setRequiredFields("sex");
 			LocalValidatorFactoryBean vf = new LocalValidatorFactoryBean();
@@ -2219,9 +2363,8 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 	static class MySpecificBinderInitializingCommandProvidingFormController
 			extends MyCommandProvidingFormController<String, TestBean, ITestBean> {
 
-		@SuppressWarnings("unused")
 		@InitBinder({"myCommand", "date"})
-		private void initBinder(WebDataBinder binder, String date, @RequestParam("date") String[] date2) {
+		public void initBinder(WebDataBinder binder, String date, @RequestParam("date") String[] date2) {
 			LocalValidatorFactoryBean vf = new LocalValidatorFactoryBean();
 			vf.afterPropertiesSet();
 			binder.setValidator(vf);
@@ -2352,22 +2495,22 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 	@Controller
 	static class MyRelativeMethodPathDispatchingController {
 
-		@RequestMapping("**/myHandle")
+		@RequestMapping("*/myHandle") // was **/myHandle
 		public void myHandle(HttpServletResponse response) throws IOException {
 			response.getWriter().write("myView");
 		}
 
-		@RequestMapping("/**/*Other")
+		@RequestMapping("/*/*Other") // was /**/*Other
 		public void myOtherHandle(HttpServletResponse response) throws IOException {
 			response.getWriter().write("myOtherView");
 		}
 
-		@RequestMapping("**/myLang")
+		@RequestMapping("*/myLang") // was **/myLang
 		public void myLangHandle(HttpServletResponse response) throws IOException {
 			response.getWriter().write("myLangView");
 		}
 
-		@RequestMapping("/**/surprise")
+		@RequestMapping("/*/surprise") // was /**/surprise
 		public void mySurpriseHandle(HttpServletResponse response) throws IOException {
 			response.getWriter().write("mySurpriseView");
 		}
@@ -2429,7 +2572,7 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 
 				@Override
 				@SuppressWarnings({"unchecked", "deprecation", "rawtypes"})
-				public void render(Map model, HttpServletRequest request, HttpServletResponse response)
+				public void render(@Nullable Map model, HttpServletRequest request, HttpServletResponse response)
 						throws Exception {
 					TestBean tb = (TestBean) model.get("testBean");
 					if (tb == null) {
@@ -2474,7 +2617,7 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 					return null;
 				}
 				@Override
-				public void render(Map<String, ?> model, HttpServletRequest request, HttpServletResponse response) {
+				public void render(@Nullable Map<String, ?> model, HttpServletRequest request, HttpServletResponse response) {
 					request.setAttribute("viewName", viewName);
 					request.getSession().setAttribute("model", model);
 				}
@@ -2631,7 +2774,7 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 	@Controller
 	public static class PathOrderingController {
 
-		@RequestMapping(value = {"/dir/myPath1.do", "/**/*.do"})
+		@RequestMapping(value = {"/dir/myPath1.do", "/*/*.do"})
 		public void method1(Writer writer) throws IOException {
 			writer.write("method1");
 		}
@@ -2687,24 +2830,21 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 
 	@XmlRootElement
 	public static class A {
-
 	}
 
 	@XmlRootElement
 	public static class B {
-
 	}
-
 
 	public static class NotReadableMessageConverter implements HttpMessageConverter<Object> {
 
 		@Override
-		public boolean canRead(Class<?> clazz, MediaType mediaType) {
+		public boolean canRead(Class<?> clazz, @Nullable MediaType mediaType) {
 			return true;
 		}
 
 		@Override
-		public boolean canWrite(Class<?> clazz, MediaType mediaType) {
+		public boolean canWrite(Class<?> clazz, @Nullable MediaType mediaType) {
 			return true;
 		}
 
@@ -2720,7 +2860,7 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 		}
 
 		@Override
-		public void write(Object o, MediaType contentType, HttpOutputMessage outputMessage)
+		public void write(Object o, @Nullable MediaType contentType, HttpOutputMessage outputMessage)
 				throws IOException, HttpMessageNotWritableException {
 			throw new UnsupportedOperationException("Not implemented");
 		}
@@ -2735,12 +2875,12 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 		}
 
 		@Override
-		public boolean canRead(Class<?> clazz, MediaType mediaType) {
+		public boolean canRead(Class<?> clazz, @Nullable MediaType mediaType) {
 			return supportedMediaTypes.contains(mediaType);
 		}
 
 		@Override
-		public boolean canWrite(Class<?> clazz, MediaType mediaType) {
+		public boolean canWrite(Class<?> clazz, @Nullable MediaType mediaType) {
 			return supportedMediaTypes.contains(mediaType);
 		}
 
@@ -2756,7 +2896,7 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 		}
 
 		@Override
-		public void write(Object o, MediaType contentType, HttpOutputMessage outputMessage)
+		public void write(Object o, @Nullable MediaType contentType, HttpOutputMessage outputMessage)
 				throws IOException, HttpMessageNotWritableException {
 			outputMessage.getHeaders().setContentType(contentType);
 			outputMessage.getBody(); // force a header write
@@ -2867,7 +3007,7 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 						return "text/html";
 					}
 					@Override
-					public void render(Map<String, ?> model, HttpServletRequest request, HttpServletResponse response)
+					public void render(@Nullable Map<String, ?> model, HttpServletRequest request, HttpServletResponse response)
 							throws Exception {
 						response.getWriter().write("myValue");
 					}
@@ -3141,12 +3281,16 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 		}
 
 		@RequestMapping("/singleString")
-		public void processMultipart(@RequestParam("content") String content, HttpServletResponse response) throws IOException {
+		public void processMultipart(@RequestParam("content") String content,
+				HttpServletResponse response) throws IOException {
+
 			response.getWriter().write(content);
 		}
 
 		@RequestMapping("/stringArray")
-		public void processMultipart(@RequestParam("content") String[] content, HttpServletResponse response) throws IOException {
+		public void processMultipart(@RequestParam("content") String[] content,
+				HttpServletResponse response) throws IOException {
+
 			response.getWriter().write(StringUtils.arrayToDelimitedString(content, "-"));
 		}
 	}
@@ -3203,21 +3347,26 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 			dataBinder.setRequiredFields("name");
 		}
 
-		@RequestMapping(value = "/messages/{id}", method = RequestMethod.GET)
+		@GetMapping("/messages/{id}")
 		public void message(ModelMap model, Writer writer) throws IOException {
 			writer.write("Got: " + model.get("successMessage"));
 		}
 
-		@RequestMapping(value = "/messages", method = RequestMethod.POST)
-		public String sendMessage(TestBean testBean, BindingResult result, RedirectAttributes redirectAttrs) {
+		@PostMapping("/messages")
+		public String sendMessage(TestBean testBean, BindingResult result, RedirectAttributes attributes) {
 			if (result.hasErrors()) {
 				return "messages/new";
 			}
-			else {
-				redirectAttrs.addAttribute("id", "1").addAttribute("name", "value")
-						.addFlashAttribute("successMessage", "yay!");
-				return "redirect:/messages/{id}";
-			}
+			attributes.addAttribute("id", "1").addAttribute("name", "value");
+			attributes.addFlashAttribute("successMessage", "yay!");
+			return "redirect:/messages/{id}";
+		}
+
+		@PostMapping("/messages-response-entity")
+		public ResponseEntity<Void> sendMessage(RedirectAttributes attributes) {
+			attributes.addFlashAttribute("successMessage", "yay!");
+			URI location = URI.create("/messages/1?name=value");
+			return ResponseEntity.status(HttpStatus.FOUND).location(location).build();
 		}
 	}
 
@@ -3268,7 +3417,6 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 		public HttpHeaders createNoHeader() throws URISyntaxException {
 			return new HttpHeaders();
 		}
-
 	}
 
 	@RestController
@@ -3300,7 +3448,86 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 
 		@RequestMapping("/path")
 		public ModelAndView methodWithHttpStatus(MyEntity object) {
-			return new ModelAndView("view", new ModelMap(), HttpStatus.UNPROCESSABLE_ENTITY);
+			return new ModelAndView("view", HttpStatus.UNPROCESSABLE_ENTITY);
+		}
+
+		@RequestMapping("/exception")
+		public void raiseException() throws Exception {
+			throw new TestException();
+		}
+
+		@ExceptionHandler(TestException.class)
+		public ModelAndView handleException() {
+			return new ModelAndView("view", HttpStatus.UNPROCESSABLE_ENTITY);
+		}
+
+		@SuppressWarnings("serial")
+		private static class TestException extends Exception {
+		}
+	}
+
+	public static class DataClass {
+
+		@NotNull
+		public final String param1;
+
+		public final boolean param2;
+
+		public int param3;
+
+		@ConstructorProperties({"param1", "param2", "optionalParam"})
+		public DataClass(String param1, boolean p2, Optional<Integer> optionalParam) {
+			this.param1 = param1;
+			this.param2 = p2;
+			Assert.notNull(optionalParam, "Optional must not be null");
+			optionalParam.ifPresent(integer -> this.param3 = integer);
+		}
+
+		public void setParam3(int param3) {
+			this.param3 = param3;
+		}
+	}
+
+	@RestController
+	public static class DataClassController {
+
+		@RequestMapping("/bind")
+		public String handle(DataClass data) {
+			return data.param1 + "-" + data.param2 + "-" + data.param3;
+		}
+	}
+
+	@RestController
+	public static class ValidatedDataClassController {
+
+		@InitBinder
+		public void initBinder(WebDataBinder binder) {
+			LocalValidatorFactoryBean vf = new LocalValidatorFactoryBean();
+			vf.afterPropertiesSet();
+			binder.setValidator(vf);
+			binder.setConversionService(new DefaultFormattingConversionService());
+		}
+
+		@RequestMapping("/bind")
+		public String handle(@Valid DataClass data, BindingResult result) {
+			if (result.hasErrors()) {
+				return result.toString();
+			}
+			return data.param1 + "-" + data.param2 + "-" + data.param3;
+		}
+	}
+
+	@RestController
+	public static class OptionalDataClassController {
+
+		@RequestMapping("/bind")
+		public String handle(Optional<DataClass> optionalData, BindingResult result) {
+			if (result.hasErrors()) {
+				assertNotNull(optionalData);
+				assertFalse(optionalData.isPresent());
+				return result.toString();
+			}
+			return optionalData.map(data -> data.param1 + "-" + data.param2 + "-" + data.param3).orElse("");
 		}
 	}
 

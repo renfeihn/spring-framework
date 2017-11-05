@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2016 the original author or authors.
+ * Copyright 2002-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 
 package org.springframework.http.client.reactive;
 
+import java.io.File;
 import java.net.URI;
 import java.util.Collection;
 
@@ -24,21 +25,22 @@ import io.netty.handler.codec.http.cookie.DefaultCookie;
 import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import reactor.ipc.netty.http.HttpClientRequest;
+import reactor.ipc.netty.http.client.HttpClientRequest;
 
 import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.core.io.buffer.DataBufferFactory;
 import org.springframework.core.io.buffer.NettyDataBufferFactory;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.ZeroCopyHttpOutputMessage;
 
 /**
  * {@link ClientHttpRequest} implementation for the Reactor-Netty HTTP client.
  *
  * @author Brian Clozel
  * @since 5.0
- * @see reactor.ipc.netty.http.HttpClient
+ * @see reactor.ipc.netty.http.client.HttpClient
  */
-public class ReactorClientHttpRequest extends AbstractClientHttpRequest {
+class ReactorClientHttpRequest extends AbstractClientHttpRequest implements ZeroCopyHttpOutputMessage {
 
 	private final HttpMethod httpMethod;
 
@@ -53,8 +55,8 @@ public class ReactorClientHttpRequest extends AbstractClientHttpRequest {
 			HttpClientRequest httpRequest) {
 		this.httpMethod = httpMethod;
 		this.uri = uri;
-		this.httpRequest = httpRequest;
-		this.bufferFactory = new NettyDataBufferFactory(httpRequest.delegate().alloc());
+		this.httpRequest = httpRequest.failOnClientError(false).failOnServerError(false);
+		this.bufferFactory = new NettyDataBufferFactory(httpRequest.alloc());
 	}
 
 
@@ -74,37 +76,38 @@ public class ReactorClientHttpRequest extends AbstractClientHttpRequest {
 	}
 
 	@Override
-	public Mono<Void> writeWith(Publisher<DataBuffer> body) {
-		return applyBeforeCommit().then(this.httpRequest
-				.send(Flux.from(body).map(NettyDataBufferFactory::toByteBuf)));
+	public Mono<Void> writeWith(Publisher<? extends DataBuffer> body) {
+		return doCommit(() -> this.httpRequest
+				.send(Flux.from(body).map(NettyDataBufferFactory::toByteBuf)).then());
 	}
 
 	@Override
-	public Mono<Void> writeAndFlushWith(Publisher<Publisher<DataBuffer>> body) {
-		Publisher<Publisher<ByteBuf>> byteBufs = Flux.from(body).
-				map(ReactorClientHttpRequest::toByteBufs);
-		return applyBeforeCommit().then(this.httpRequest
-				.sendAndFlush(byteBufs));
+	public Mono<Void> writeAndFlushWith(Publisher<? extends Publisher<? extends DataBuffer>> body) {
+		Publisher<Publisher<ByteBuf>> byteBufs = Flux.from(body).map(ReactorClientHttpRequest::toByteBufs);
+		return doCommit(() -> this.httpRequest.sendGroups(byteBufs).then());
 	}
 
-	private static Publisher<ByteBuf> toByteBufs(Publisher<DataBuffer> dataBuffers) {
-		return Flux.from(dataBuffers).
-				map(NettyDataBufferFactory::toByteBuf);
+	private static Publisher<ByteBuf> toByteBufs(Publisher<? extends DataBuffer> dataBuffers) {
+		return Flux.from(dataBuffers).map(NettyDataBufferFactory::toByteBuf);
+	}
+
+	@Override
+	public Mono<Void> writeWith(File file, long position, long count) {
+		return doCommit(() -> this.httpRequest.sendFile(file.toPath(), position, count).then());
 	}
 
 	@Override
 	public Mono<Void> setComplete() {
-		return applyBeforeCommit().then(httpRequest.sendHeaders());
+		return doCommit(() -> httpRequest.sendHeaders().then());
 	}
 
 	@Override
-	protected void writeHeaders() {
-		getHeaders().entrySet()
-				.forEach(e -> this.httpRequest.headers().set(e.getKey(), e.getValue()));
+	protected void applyHeaders() {
+		getHeaders().entrySet().forEach(e -> this.httpRequest.requestHeaders().set(e.getKey(), e.getValue()));
 	}
 
 	@Override
-	protected void writeCookies() {
+	protected void applyCookies() {
 		getCookies().values().stream().flatMap(Collection::stream)
 				.map(cookie -> new DefaultCookie(cookie.getName(), cookie.getValue()))
 				.forEach(this.httpRequest::addCookie);

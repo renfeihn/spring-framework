@@ -231,9 +231,14 @@
 						<xsd:attribute name="task-executor" type="xsd:string">
 							<xsd:annotation>
 								<xsd:documentation source="java:org.springframework.core.task.AsyncTaskExecutor"><![CDATA[
-	The bean name of a default AsyncTaskExecutor to use when a controller method returns a {@link Callable}.
+	The bean name of a default AsyncTaskExecutor to use when a controller method returns a "Callable".
 	Controller methods can override this default on a per-request basis by returning an AsyncTask.
 	By default, a SimpleAsyncTaskExecutor is used which does not re-use threads and is not recommended for production.
+
+	As of 5.0 this executor is also used when a controller returns a reactive type that does streaming
+	(e.g. "text/event-stream" or "application/stream+json") for the blocking writes to the
+	"javax.servlet.ServletOutputStream".
+
 								]]></xsd:documentation>
 								<xsd:appinfo>
 									<tool:annotation kind="ref">
@@ -954,7 +959,7 @@
 		<xsd:attribute name="cache-views" type="xsd:boolean">
 			<xsd:annotation>
 				<xsd:documentation><![CDATA[
-	Enable or disable thew caching of resolved views.
+	Enable or disable the caching of resolved views.
 	Default is "true": caching is enabled.
 	Disable this only for debugging and development.
 				]]></xsd:documentation>
@@ -964,7 +969,7 @@
 			<xsd:annotation>
 				<xsd:documentation><![CDATA[
 	The view class that should be used to create views.
-	Configure this if you want to provide a custom View implementation, typically a ub-class of the expected View type.
+	Configure this if you want to provide a custom View implementation, typically a sub-class of the expected View type.
 				]]></xsd:documentation>
 				<xsd:appinfo>
 					<tool:annotation kind="ref">
